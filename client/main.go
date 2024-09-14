@@ -1,73 +1,34 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
-	"sync"
+	"os"
 )
 
-type Server struct {
-	clients map[string]net.Conn
-	mu      sync.Mutex
-}
-
-func NewServer() *Server {
-	return &Server{
-		clients: make(map[string]net.Conn),
-	}
-}
-
-func (s *Server) handleClient(conn net.Conn) {
-	defer conn.Close()
-
-	clientAddr := conn.RemoteAddr().String()
-	fmt.Printf("Client connected: %s\n", clientAddr)
-
-	// Add client to the list
-	s.mu.Lock()
-	s.clients[clientAddr] = conn
-	s.mu.Unlock()
-
-	// Listen for client messages
-	buffer := make([]byte, 1024)
-	for {
-		n, err := conn.Read(buffer)
-		if err != nil {
-			fmt.Printf("Client disconnected: %s\n", clientAddr)
-			break
-		}
-
-		msg := string(buffer[:n])
-		fmt.Printf("Message from %s: %s\n", clientAddr, msg)
-	}
-
-	// Remove client after disconnection
-	s.mu.Lock()
-	delete(s.clients, clientAddr)
-	s.mu.Unlock()
-}
-
-func (s *Server) listen(port string) {
-	listener, err := net.Listen("tcp", port)
+func main() {
+	conn, err := net.Dial("tcp", "localhost:8080")
 	if err != nil {
-		fmt.Println("Error starting server:", err)
+		fmt.Println("Error connecting to server:", err)
 		return
 	}
-	defer listener.Close()
+	defer conn.Close()
 
-	fmt.Println("Server started on port", port)
+	fmt.Println("Connected to the server!")
+
+	// Create a reader for standard input
+	reader := bufio.NewReader(os.Stdin)
 
 	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection:", err)
-			continue
-		}
-		go s.handleClient(conn) // Handle client concurrently
-	}
-}
+		fmt.Print("Enter message: ")
+		msg, _ := reader.ReadString('\n')
 
-func main() {
-	server := NewServer()
-	server.listen(":8080")
+		// Send the message to the server
+		_, err := conn.Write([]byte(msg))
+		if err != nil {
+			fmt.Println("Error sending message:", err)
+			return
+		}
+	}
 }
