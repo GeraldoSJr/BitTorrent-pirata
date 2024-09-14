@@ -14,9 +14,7 @@ type Server struct {
 
 func NewServer() *Server {
 	return &Server{
-		storage: &helpers.IPStorage{
-			Data: make(map[string]helpers.FileInfo),
-		},
+		storage: helpers.NewIPStorage(),
 	}
 }
 
@@ -24,7 +22,6 @@ func (s *Server) handleClient(conn net.Conn) {
 	defer func() {
 		clientAddr := conn.RemoteAddr().String()
 		fmt.Printf("Client disconnected: %s\n", clientAddr)
-		s.storage.RemoveClient(clientAddr)
 		conn.Close()
 	}()
 
@@ -43,7 +40,7 @@ func (s *Server) handleClient(conn net.Conn) {
 			fileHash, _ := reader.ReadString('\n')
 			fileHash = strings.TrimSpace(fileHash)
 
-			fileInfo := helpers.NewFileInfo(fileHash)
+			fileInfo := helpers.FileInfo{FileHash: fileHash}
 			s.storage.AddClientInfo(clientAddr, fileInfo)
 			conn.Write([]byte("FileHash added successfully.\n"))
 
