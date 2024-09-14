@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 	"github.com/GeraldoSJr/BitTorrent-pirata/v2/helpers"
 )
 
@@ -18,6 +19,19 @@ func NewServer() *Server {
 	}
 }
 
+func (s *Server) monitorConnection(conn net.Conn, clientAddr string) {
+	for {
+		_, err := conn.Write([]byte(""))
+		if err != nil {
+			fmt.Printf("Client %s disconnected. Removing data...\n", clientAddr)
+			s.storage.RemoveClient(clientAddr)
+			conn.Close()
+			return
+		}
+		time.Sleep(3 * time.Second)
+	}
+}
+
 func (s *Server) handleClient(conn net.Conn) {
 	defer func() {
 		clientAddr := conn.RemoteAddr().String()
@@ -28,6 +42,8 @@ func (s *Server) handleClient(conn net.Conn) {
 	clientAddr := conn.RemoteAddr().String()
 	fmt.Printf("Client connected: %s\n", clientAddr)
 
+	go s.monitorConnection(conn, clientAddr)
+
 	for {
 		reader := bufio.NewReader(conn)
 		conn.Write([]byte("Choose an option: [1] Add FileHash [2] Query FileHash:\n"))
@@ -35,16 +51,16 @@ func (s *Server) handleClient(conn net.Conn) {
 		option = strings.TrimSpace(option)
 
 		switch option {
-		case "1": // Adicionar hash ao sistema
+		case "1":
 			conn.Write([]byte("Send FileHash:\n"))
 			fileHash, _ := reader.ReadString('\n')
 			fileHash = strings.TrimSpace(fileHash)
 
-			fileInfo := helpers.FileInfo{FileHash: fileHash}
+			fileInfo := helpers.FileInfo{FileHashes: []string{fileHash}}
 			s.storage.AddClientInfo(clientAddr, fileInfo)
 			conn.Write([]byte("FileHash added successfully.\n"))
 
-		case "2": // Consultar hash no sistema
+		case "2":
 			conn.Write([]byte("Send FileHash to query:\n"))
 			queryHash, _ := reader.ReadString('\n')
 			queryHash = strings.TrimSpace(queryHash)
