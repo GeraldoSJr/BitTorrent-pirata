@@ -1,50 +1,52 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
-	"sync"
+	"github.com/GeraldoSJr/BitTorrent-pirata/v2/helpers"
 )
 
 type Server struct {
-	clients map[string]net.Conn
-	mu      sync.Mutex
+	storage *helpers.IPStorage
 }
 
 func NewServer() *Server {
 	return &Server{
-		clients: make(map[string]net.Conn),
+		storage: &helpers.IPStorage{
+			Data: make(map[string]helpers.FileInfo),
+		},
 	}
 }
 
 func (s *Server) handleClient(conn net.Conn) {
-	defer conn.Close()
+	defer func() {
+		clientAddr := conn.RemoteAddr().String()
+		fmt.Printf("Client disconnected: %s\n", clientAddr)
+		s.storage.RemoveClient(clientAddr)
+		conn.Close()
+	}()
 
 	clientAddr := conn.RemoteAddr().String()
 	fmt.Printf("Client connected: %s\n", clientAddr)
 
-	// Add client to the list
-	s.mu.Lock()
-	s.clients[clientAddr] = conn
-	s.mu.Unlock()
+	reader := bufio.NewReader(conn)
+	fmt.Fprintf(conn, "Send FileInfo as a JSON object:\n")
+	message, _ := reader.ReadString('\n')
 
-	// Listen for client messages
-	buffer := make([]byte, 1024)
-	for {
-		n, err := conn.Read(buffer)
-		if err != nil {
-			fmt.Printf("Client disconnected: %s\n", clientAddr)
-			break
-		}
-
-		msg := string(buffer[:n])
-		fmt.Printf("Message from %s: %s\n", clientAddr, msg)
+	fileInfo, err := helpers.DecodeFileInfo([]byte(message))
+	if err != nil {
+		fmt.Fprintf(conn, "Invalid JSON format: %v\n", err)
+		return
 	}
 
-	// Remove client after disconnection
-	s.mu.Lock()
-	delete(s.clients, clientAddr)
-	s.mu.Unlock()
+	s.storage.AddClientInfo(clientAddr, fileInfo)
+
+	clients := s.storage.GetAllClients()
+	conn.Write([]byte("List of clients and file information:\n"))
+	for ip, info := range clients {
+		conn.Write([]byte(fmt.Sprintf("IP: %s, File Hash: %s, File ID: %s\n", ip, info.FileHash, info.FileID)))
+	}
 }
 
 func (s *Server) listen(port string) {
@@ -63,7 +65,7 @@ func (s *Server) listen(port string) {
 			fmt.Println("Error accepting connection:", err)
 			continue
 		}
-		go s.handleClient(conn) // Handle client concurrently
+		go s.handleClient(conn)
 	}
 }
 
