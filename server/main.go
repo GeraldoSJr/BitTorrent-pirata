@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"net"
+	"strings"
 	"github.com/GeraldoSJr/BitTorrent-pirata/v2/helpers"
 )
 
@@ -30,22 +31,40 @@ func (s *Server) handleClient(conn net.Conn) {
 	clientAddr := conn.RemoteAddr().String()
 	fmt.Printf("Client connected: %s\n", clientAddr)
 
-	reader := bufio.NewReader(conn)
-	fmt.Fprintf(conn, "Send FileInfo as a JSON object:\n")
-	message, _ := reader.ReadString('\n')
+	for {
+		reader := bufio.NewReader(conn)
+		conn.Write([]byte("Choose an option: [1] Add FileHash [2] Query FileHash:\n"))
+		option, _ := reader.ReadString('\n')
+		option = strings.TrimSpace(option)
 
-	fileInfo, err := helpers.DecodeFileInfo([]byte(message))
-	if err != nil {
-		fmt.Fprintf(conn, "Invalid JSON format: %v\n", err)
-		return
-	}
+		switch option {
+		case "1": // Adicionar hash ao sistema
+			conn.Write([]byte("Send FileHash:\n"))
+			fileHash, _ := reader.ReadString('\n')
+			fileHash = strings.TrimSpace(fileHash)
 
-	s.storage.AddClientInfo(clientAddr, fileInfo)
+			fileInfo := helpers.NewFileInfo(fileHash)
+			s.storage.AddClientInfo(clientAddr, fileInfo)
+			conn.Write([]byte("FileHash added successfully.\n"))
 
-	clients := s.storage.GetAllClients()
-	conn.Write([]byte("List of clients and file information:\n"))
-	for ip, info := range clients {
-		conn.Write([]byte(fmt.Sprintf("IP: %s, File Hash: %s, File ID: %s\n", ip, info.FileHash, info.FileID)))
+		case "2": // Consultar hash no sistema
+			conn.Write([]byte("Send FileHash to query:\n"))
+			queryHash, _ := reader.ReadString('\n')
+			queryHash = strings.TrimSpace(queryHash)
+
+			clientsWithHash := s.storage.GetClientsByHash(queryHash)
+			if len(clientsWithHash) > 0 {
+				conn.Write([]byte("Clients with the requested FileHash:\n"))
+				for _, client := range clientsWithHash {
+					conn.Write([]byte(fmt.Sprintf("IP: %s\n", client)))
+				}
+			} else {
+				conn.Write([]byte("No clients found with the requested FileHash.\n"))
+			}
+
+		default:
+			conn.Write([]byte("Invalid option. Try again.\n"))
+		}
 	}
 }
 

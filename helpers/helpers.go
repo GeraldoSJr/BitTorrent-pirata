@@ -1,27 +1,24 @@
 package helpers
 
 import (
-	"encoding/json"
 	"sync"
 )
 
-// Estrutura que contém informações do arquivo
+// Estrutura que contém apenas o hash do arquivo
 type FileInfo struct {
-	FileHash string `json:"file_hash"`
-	FileID   string `json:"file_id"`
+	FileHash string
 }
 
 // Estrutura que contém o mapa de IPs para FileInfo
 type IPStorage struct {
-	Data map[string]FileInfo // Modificado para "Data", para ser exportado
+	Data map[string]FileInfo // Mapa de IPs para FileInfo
 	mu   sync.Mutex
 }
 
 // Função para criar um novo FileInfo
-func NewFileInfo(fileHash string, fileID string) FileInfo {
+func NewFileInfo(fileHash string) FileInfo {
 	return FileInfo{
 		FileHash: fileHash,
-		FileID:   fileID,
 	}
 }
 
@@ -29,8 +26,6 @@ func NewFileInfo(fileHash string, fileID string) FileInfo {
 func (s *IPStorage) AddClientInfo(ip string, fileInfo FileInfo) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	// Atualiza ou adiciona as informações do cliente
 	s.Data[ip] = fileInfo
 }
 
@@ -48,9 +43,16 @@ func (s *IPStorage) GetAllClients() map[string]FileInfo {
 	return s.Data
 }
 
-// Função para deserializar um pacote JSON para um struct FileInfo
-func DecodeFileInfo(data []byte) (FileInfo, error) {
-	var fileInfo FileInfo
-	err := json.Unmarshal(data, &fileInfo)
-	return fileInfo, err
+// Função para retornar todos os IPs que possuem um determinado hash
+func (s *IPStorage) GetClientsByHash(fileHash string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var clients []string
+	for ip, info := range s.Data {
+		if info.FileHash == fileHash {
+			clients = append(clients, ip)
+		}
+	}
+	return clients
 }
