@@ -1,107 +1,108 @@
 package main
 
 import (
-	"bufio"
+	"encoding/gob"
 	"fmt"
+	"log"
 	"net"
-	"strings"
-	"time"
-	"github.com/GeraldoSJr/BitTorrent-pirata/v2/helpers"
+	"sync"
 )
 
 type Server struct {
-	storage *helpers.IPStorage
+    sync.Mutex
+    hashMap map[int][]string
 }
 
 func NewServer() *Server {
-	return &Server{
-		storage: helpers.NewIPStorage(),
-	}
+    return &Server{
+        hashMap: make(map[int][]string),
+    }
 }
 
-func (s *Server) monitorConnection(conn net.Conn, clientAddr string) {
-	for {
-		_, err := conn.Write([]byte(""))
-		if err != nil {
-			fmt.Printf("Client %s disconnected. Removing data...\n", clientAddr)
-			s.storage.RemoveClient(clientAddr)
-			conn.Close()
-			return
-		}
-		time.Sleep(3 * time.Second)
-	}
+func (s *Server) handleConnection(conn net.Conn) {
+    defer conn.Close()
+
+    var requestType string
+    decoder := gob.NewDecoder(conn)
+    if err := decoder.Decode(&requestType); err != nil {
+        log.Println("Error decoding request type:", err)
+        return
+    }
+
+    if requestType == "store" {
+        s.handleStoreRequest(conn)
+    } else if requestType == "query" {
+        s.handleQueryRequest(conn)
+    } else {
+        log.Println("Unknown request type:", requestType)
+    }
 }
 
-func (s *Server) handleClient(conn net.Conn) {
-	defer func() {
-		clientAddr := conn.RemoteAddr().String()
-		fmt.Printf("Client disconnected: %s\n", clientAddr)
-		conn.Close()
-	}()
+func (s *Server) handleStoreRequest(conn net.Conn) {
+    var clientHashes []int
+    decoder := gob.NewDecoder(conn)
+    if err := decoder.Decode(&clientHashes); err != nil {
+        log.Println("Error decoding data:", err)
+        return
+    }
 
-	clientAddr := conn.RemoteAddr().String()
-	fmt.Printf("Client connected: %s\n", clientAddr)
+    s.Lock()
+    clientIP := conn.RemoteAddr().String()
+    for _, hash := range clientHashes {
+        if _, exists := s.hashMap[hash]; !exists {
+            s.hashMap[hash] = []string{}
+        }
+        s.hashMap[hash] = append(s.hashMap[hash], clientIP)
+    }
+    s.Unlock()
 
-	go s.monitorConnection(conn, clientAddr)
-
-	for {
-		reader := bufio.NewReader(conn)
-		conn.Write([]byte("Choose an option: [1] Add FileHash [2] Query FileHash:\n"))
-		option, _ := reader.ReadString('\n')
-		option = strings.TrimSpace(option)
-
-		switch option {
-		case "1":
-			conn.Write([]byte("Send FileHash:\n"))
-			fileHash, _ := reader.ReadString('\n')
-			fileHash = strings.TrimSpace(fileHash)
-
-			fileInfo := helpers.FileInfo{FileHashes: []string{fileHash}}
-			s.storage.AddClientInfo(clientAddr, fileInfo)
-			conn.Write([]byte("FileHash added successfully.\n"))
-
-		case "2":
-			conn.Write([]byte("Send FileHash to query:\n"))
-			queryHash, _ := reader.ReadString('\n')
-			queryHash = strings.TrimSpace(queryHash)
-
-			clientsWithHash := s.storage.GetClientsByHash(queryHash)
-			if len(clientsWithHash) > 0 {
-				conn.Write([]byte("Clients with the requested FileHash:\n"))
-				for _, client := range clientsWithHash {
-					conn.Write([]byte(fmt.Sprintf("IP: %s\n", client)))
-				}
-			} else {
-				conn.Write([]byte("No clients found with the requested FileHash.\n"))
-			}
-
-		default:
-			conn.Write([]byte("Invalid option. Try again.\n"))
-		}
-	}
+    printHashMap(s.hashMap)  // Use the custom print function
 }
 
-func (s *Server) listen(port string) {
-	listener, err := net.Listen("tcp", port)
-	if err != nil {
-		fmt.Println("Error starting server:", err)
-		return
-	}
-	defer listener.Close()
+func (s *Server) handleQueryRequest(conn net.Conn) {
+    var hash int
+    decoder := gob.NewDecoder(conn)
+    if err := decoder.Decode(&hash); err != nil {
+        log.Println("Error decoding hash:", err)
+        return
+    }
 
-	fmt.Println("Server started on port", port)
+    s.Lock()
+    ips := s.hashMap[hash]
+    s.Unlock()
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			fmt.Println("Error accepting connection:", err)
-			continue
-		}
-		go s.handleClient(conn)
-	}
+    encoder := gob.NewEncoder(conn)
+    encoder.Encode(ips)
+    
+}
+
+func printHashMap(hashMap map[int][]string) {
+    fmt.Println("Hash Map:")
+    for hash, ips := range hashMap {
+        fmt.Printf("Hash: %d\n", hash)
+        fmt.Println("  IPs:")
+        for _, ip := range ips {
+            fmt.Printf("    %s\n", ip)
+        }
+    }
 }
 
 func main() {
-	server := NewServer()
-	server.listen(":8080")
+    server := NewServer()
+    ln, err := net.Listen("tcp", ":8080")
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer ln.Close()
+
+    fmt.Println("Server is listening on port 8080...")
+
+    for {
+        conn, err := ln.Accept()
+        if err != nil {
+            log.Println("Error accepting connection:", err)
+            continue
+        }
+        go server.handleConnection(conn)
+    }
 }
