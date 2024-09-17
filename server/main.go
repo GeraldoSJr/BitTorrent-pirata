@@ -42,6 +42,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 		if requestType == "store" {
 			s.handleStoreRequest(conn)
+		} else if requestType == "create" {
+			s.handleCreateRequest(conn)
+		} else if requestType == "delete" {
+			s.handleDeleteRequest(conn)
 		} else if requestType == "query" {
 			s.handleQueryRequest(conn)
 		} else {
@@ -70,6 +74,56 @@ func (s *Server) handleStoreRequest(conn net.Conn) {
 	s.Unlock()
 
 	printHashMap(s.hashMap)
+}
+
+func (s *Server) handleCreateRequest(conn net.Conn) {
+	var fileHash int
+	decoder := gob.NewDecoder(conn)
+	if err := decoder.Decode(&fileHash); err != nil {
+		log.Println("Error decoding file hash:", err)
+		return
+	}
+
+	clientIP := conn.RemoteAddr().String()
+
+	s.Lock()
+	if _, exists := s.hashMap[fileHash]; !exists {
+		s.hashMap[fileHash] = []string{}
+	}
+	s.hashMap[fileHash] = append(s.hashMap[fileHash], clientIP)
+	s.clientData[clientIP] = append(s.clientData[clientIP], fileHash)
+	s.Unlock()
+
+	fmt.Printf("File created by %s: Hash %d\n", clientIP, fileHash)
+}
+
+func (s *Server) handleDeleteRequest(conn net.Conn) {
+	var fileHash int
+	decoder := gob.NewDecoder(conn)
+	if err := decoder.Decode(&fileHash); err != nil {
+		log.Println("Error decoding file hash:", err)
+		return
+	}
+
+	clientIP := conn.RemoteAddr().String()
+
+	s.Lock()
+	if ips, exists := s.hashMap[fileHash]; exists {
+		for i, ip := range ips {
+			if ip == clientIP {
+				s.hashMap[fileHash] = append(ips[:i], ips[i+1:]...)
+				break
+			}
+		}
+		if len(s.hashMap[fileHash]) == 0 {
+			delete(s.hashMap, fileHash)
+		}
+	}
+
+	s.clientData[clientIP] = removeFromSlice(s.clientData[clientIP], fileHash)
+	s.Unlock()
+
+	fmt.Printf("File deleted by %s: Hash %d\n", clientIP, fileHash)
 }
 
 func (s *Server) handleQueryRequest(conn net.Conn) {
@@ -125,6 +179,15 @@ func printHashMap(hashMap map[int][]string) {
 			fmt.Printf("    %s\n", ip)
 		}
 	}
+}
+
+func removeFromSlice(slice []int, val int) []int {
+	for i, v := range slice {
+		if v == val {
+			return append(slice[:i], slice[i+1:]...)
+		}
+	}
+	return slice
 }
 
 func main() {

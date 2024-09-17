@@ -7,8 +7,11 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/fsnotify/fsnotify"
 )
 
 func readFile(filePath string) ([]byte, error) {
@@ -65,9 +68,7 @@ func listarArquivos(diretorio string) []string {
 	return result
 }
 
-func generateFilesHashMap() map[string][]int {
-	diretorio := "./dataset/"
-
+func generateFilesHashMap(diretorio string) map[string][]int {
 	if _, err := os.Stat(diretorio); os.IsNotExist(err) {
 		log.Fatalf("O diretório %s não existe", diretorio)
 	}
@@ -79,7 +80,7 @@ func generateFilesHashMap() map[string][]int {
 	}, size)
 
 	for _, path := range files {
-		go sumWrapper((diretorio + path), sumChannel)
+		go sumWrapper(filepath.Join(diretorio, path), sumChannel)
 	}
 
 	hashs := make(map[string][]int)
@@ -91,7 +92,7 @@ func generateFilesHashMap() map[string][]int {
 	return hashs
 }
 
-func storeHashes(conn net.Conn, hashes []int) {
+func storeHashes(conn net.Conn, hashes map[string][]int) {
 	encoder := gob.NewEncoder(conn)
 
 	if err := encoder.Encode("store"); err != nil {
@@ -99,12 +100,74 @@ func storeHashes(conn net.Conn, hashes []int) {
 		return
 	}
 
-	if err := encoder.Encode(hashes); err != nil {
+	var hashList []int
+	for _, v := range hashes {
+		hashList = append(hashList, v...)
+	}
+
+	if err := encoder.Encode(hashList); err != nil {
 		log.Println("Error encoding hashes:", err)
 		return
 	}
 
-	fmt.Println("Hashes stored.")
+	fmt.Println("Initial hashes stored.")
+}
+
+func updateServer(conn net.Conn, action string, filePath string) {
+	encoder := gob.NewEncoder(conn)
+
+	if err := encoder.Encode(action); err != nil {
+		log.Println("Error encoding action:", err)
+		return
+	}
+
+	fileHash, err := sum(filePath)
+	if err != nil {
+		log.Printf("Error calculating hash for file %s: %v", filePath, err)
+		fileHash = 0
+	}
+
+	if err := encoder.Encode(fileHash); err != nil {
+		log.Println("Error encoding file hash:", err)
+		return
+	}
+
+	fmt.Printf("Server updated: %s - %s\n", action, filePath)
+}
+
+func monitorDirectory(conn net.Conn, directory string) {
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer watcher.Close()
+
+	err = watcher.Add(directory)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for {
+		select {
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if event.Op&fsnotify.Create == fsnotify.Create {
+				fmt.Println("File created:", event.Name)
+				updateServer(conn, "create", event.Name)
+			}
+			if event.Op&fsnotify.Remove == fsnotify.Remove {
+				fmt.Println("File deleted:", event.Name)
+				updateServer(conn, "delete", event.Name)
+			}
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			fmt.Println("Error:", err)
+		}
+	}
 }
 
 func queryHash(conn net.Conn, hash int) {
@@ -136,13 +199,18 @@ func main() {
 	}
 	defer conn.Close()
 
+	directory := "./dataset/"
+	initialHashes := generateFilesHashMap(directory)
+	storeHashes(conn, initialHashes)
+
+	go monitorDirectory(conn, directory)
+
 	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Println("\nChoose an option:")
-		fmt.Println("1. Store hashes")
-		fmt.Println("2. Query hash")
-		fmt.Println("3. Exit")
-		fmt.Print("Enter choice (1, 2, or 3): ")
+		fmt.Println("1. Query hash")
+		fmt.Println("2. Exit")
+		fmt.Print("Enter choice (1 or 2): ")
 
 		choiceStr, err := reader.ReadString('\n')
 		if err != nil {
@@ -156,16 +224,6 @@ func main() {
 
 		switch choice {
 		case 1:
-			fileHashs := generateFilesHashMap()
-			fmt.Print(fileHashs)
-			var hashes []int
-			for _, ints := range fileHashs {
-				hashes = append(hashes, ints...)
-			}
-			fmt.Print(hashes)
-			storeHashes(conn, hashes)
-
-		case 2:
 			fmt.Print("Enter hash to query: ")
 			hashInput, _ := reader.ReadString('\n')
 			hashInput = strings.TrimSpace(hashInput)
@@ -175,12 +233,12 @@ func main() {
 			}
 			queryHash(conn, hash)
 
-		case 3:
+		case 2:
 			fmt.Println("Exiting...")
 			return
 
 		default:
-			fmt.Println("Invalid choice. Please enter 1, 2, or 3.")
+			fmt.Println("Invalid choice. Please enter 1 or 2.")
 		}
 	}
 }
