@@ -367,7 +367,12 @@ func donwload(hash int, ip string, outputPath string) error {
 }
 
 func main() {
-	conn, err := net.Dial("tcp", "localhost:8080")
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Enter server IP: ")
+	serverIp, _ := reader.ReadString('\n')
+	serverIp = strings.TrimSpace(serverIp)
+
+	conn, err := net.Dial("tcp", serverIp+":8080")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -381,7 +386,6 @@ func main() {
 	go monitorDirectory(conn, directory, server)
 	go startClientServer(server)
 
-	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Println("\nChoose an option:")
 		fmt.Println("1. Query hash")
