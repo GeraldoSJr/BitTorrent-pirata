@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"sync"
+	"io"
+	"os"
 )
 
 type Server struct {
@@ -20,6 +22,65 @@ func NewServer() *Server {
 		clientData: make(map[string][]int),
 	}
 }
+
+func (s *Server) handleDownloadRequest(conn net.Conn) {
+    var chunkHash int
+    decoder := gob.NewDecoder(conn)
+
+    log.Println("Waiting to decode chunk hash...")
+    if err := decoder.Decode(&chunkHash); err != nil {
+        log.Println("Error decoding chunk hash:", err)
+        return
+    }
+    log.Printf("Received request for chunk with hash %d\n", chunkHash)
+
+  
+    filePath := "./dataset/rayane.txt"
+    file, err := os.Open(filePath)
+    if err != nil {
+        log.Printf("Error opening file %s: %v", filePath, err)
+        return
+    }
+    defer file.Close()
+
+    chunkSize := 1024
+    buffer := make([]byte, chunkSize)
+
+  
+    offset := chunkHash * chunkSize
+    log.Printf("Seeking to offset %d in file %s\n", offset, filePath)
+
+    _, err = file.Seek(int64(offset), 0)
+    if err != nil {
+        log.Printf("Error seeking file %s: %v", filePath, err)
+        return
+    }
+
+  
+    bytesRead, err := file.Read(buffer)
+    if err != nil && err != io.EOF {
+        log.Printf("Error reading file chunk: %v", err)
+        return
+    }
+
+    if bytesRead == 0 {
+        log.Printf("No more data to read from file %s\n", filePath)
+        return
+    }
+
+    chunkData := buffer[:bytesRead]
+
+    encoder := gob.NewEncoder(conn)
+    log.Println("Sending chunk data to client...")
+    if err := encoder.Encode(chunkData); err != nil {
+        log.Println("Error encoding chunk data:", err)
+        return
+    }
+    log.Printf("Chunk with hash %d sent to client\n", chunkHash)
+}
+
+
+
 
 func (s *Server) handleConnection(conn net.Conn) {
 	defer func() {
@@ -40,15 +101,18 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		if requestType == "store" {
+		switch requestType {
+		case "store":
 			s.handleStoreRequest(conn)
-		} else if requestType == "create" {
+		case "create":
 			s.handleCreateRequest(conn)
-		} else if requestType == "delete" {
+		case "delete":
 			s.handleDeleteRequest(conn)
-		} else if requestType == "query" {
+		case "query":
 			s.handleQueryRequest(conn)
-		} else {
+		case "download": 
+			s.handleDownloadRequest(conn)
+		default:
 			log.Println("Unknown request type:", requestType)
 		}
 	}

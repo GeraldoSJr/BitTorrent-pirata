@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-
+     "io"
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -170,7 +170,33 @@ func monitorDirectory(conn net.Conn, directory string) {
 	}
 }
 
-func queryHash(conn net.Conn, hash int) {
+func queryHash(conn net.Conn, chunkHashes []int) map[int][]string {
+    encoder := gob.NewEncoder(conn)
+    if err := encoder.Encode("query"); err != nil {
+        log.Println("Error encoding request type:", err)
+        return nil
+    }
+
+    result := make(map[int][]string)
+
+    for _, hash := range chunkHashes {
+        if err := encoder.Encode(hash); err != nil {
+            log.Println("Error encoding chunk hash:", err)
+            return nil
+        }
+
+        decoder := gob.NewDecoder(conn)
+        var ips []string
+        if err := decoder.Decode(&ips); err == nil {
+            result[hash] = ips
+        } else {
+            log.Println("Error decoding result:", err)
+        }
+    }
+
+    return result
+}
+func querySingleHash(conn net.Conn, hash int) {
 	encoder := gob.NewEncoder(conn)
 
 	if err := encoder.Encode("query"); err != nil {
@@ -192,6 +218,116 @@ func queryHash(conn net.Conn, hash int) {
 	}
 }
 
+
+func downloadChunksFromPeers(peers map[int][]string, chunkHashes []int, chunkSize int) ([][]byte, error) {
+    var chunks [][]byte
+    for _, hash := range chunkHashes {
+        ips := peers[hash]
+        if len(ips) == 0 {
+            log.Printf("No peers found for chunk with hash %d\n", hash)
+            continue
+        }
+        var chunk []byte
+        var success bool
+        for _, ip := range ips {
+            log.Printf("Trying to download chunk with hash %d from peer %s\n", hash, ip)
+            conn, err := net.Dial("tcp", ip+":8080")
+            if err != nil {
+                log.Println("Error connecting to peer:", err)
+                continue
+            }
+            defer conn.Close()
+
+            encoder := gob.NewEncoder(conn)
+            log.Printf("Requesting chunk with hash %d from peer %s\n", hash, ip)
+            if err := encoder.Encode("download"); err != nil {
+                log.Println("Error sending download request:", err)
+                continue
+            }
+
+            if err := encoder.Encode(hash); err != nil {
+                log.Println("Error sending chunk hash:", err)
+                continue
+            }
+
+            decoder := gob.NewDecoder(conn)
+            log.Printf("Waiting to receive chunk data for hash %d...\n", hash)
+            if err := decoder.Decode(&chunk); err == nil {
+                if len(chunk) == 0 {
+                    log.Printf("Received empty chunk for hash %d, skipping...\n", hash)
+                    continue
+                }
+                chunks = append(chunks, chunk)
+                success = true
+                log.Printf("Successfully downloaded chunk with hash %d from peer %s\n", hash, ip)
+                break
+            } else {
+                log.Println("Error decoding chunk:", err)
+            }
+        }
+
+        if !success {
+            return nil, fmt.Errorf("failed to download chunk with hash %d", hash)
+        }
+    }
+    return chunks, nil
+}
+
+
+
+func combineChunks(chunks [][]byte, outputFilePath string) error {
+    file, err := os.Create(outputFilePath)
+    if err != nil {
+        return err
+    }
+    defer file.Close()
+
+    for _, chunk := range chunks {
+        if _, err := file.Write(chunk); err != nil {
+            return err
+        }
+    }
+
+    return nil
+}
+
+
+func generateChunkHashes(chunks [][]byte) []int {
+    var hashes []int
+    for _, chunk := range chunks {
+        hash := 0
+        for _, b := range chunk {
+            hash += int(b)
+        }
+        hashes = append(hashes, hash)
+    }
+    return hashes
+}
+
+
+func splitFileIntoChunks(filePath string, chunkSize int) ([][]byte, error) {
+    file, err := os.Open(filePath)
+    if err != nil {
+        return nil, err
+    }
+    defer file.Close()
+
+    var chunks [][]byte
+    buffer := make([]byte, chunkSize)
+
+    for {
+        bytesRead, err := file.Read(buffer)
+        if err != nil && err != io.EOF {
+            return nil, err
+        }
+        if bytesRead == 0 {
+            break
+        }
+        chunks = append(chunks, buffer[:bytesRead])
+    }
+    return chunks, nil
+}
+
 func main() {
 	conn, err := net.Dial("tcp", "localhost:8080")
 	if err != nil {
@@ -210,7 +346,8 @@ func main() {
 		fmt.Println("\nChoose an option:")
 		fmt.Println("1. Query hash")
 		fmt.Println("2. Exit")
-		fmt.Print("Enter choice (1 or 2): ")
+		fmt.Println("3. Download file") 
+		fmt.Print("Enter choice (1, 2 or 3): ")
 
 		choiceStr, err := reader.ReadString('\n')
 		if err != nil {
@@ -224,6 +361,7 @@ func main() {
 
 		switch choice {
 		case 1:
+			
 			fmt.Print("Enter hash to query: ")
 			hashInput, _ := reader.ReadString('\n')
 			hashInput = strings.TrimSpace(hashInput)
@@ -231,14 +369,49 @@ func main() {
 			if err != nil {
 				log.Fatal("Invalid hash value:", err)
 			}
-			queryHash(conn, hash)
+			querySingleHash(conn, hash) 
 
 		case 2:
+			
 			fmt.Println("Exiting...")
 			return
 
+		case 3:
+			
+			fmt.Print("Enter file path to download: ")
+			filePath, _ := reader.ReadString('\n')
+			filePath = strings.TrimSpace(filePath)
+
+		
+			chunks, err := splitFileIntoChunks(filePath, 1024) 
+			if err != nil {
+				log.Fatalf("Error splitting file into chunks: %v", err)
+			}
+			chunkHashes := generateChunkHashes(chunks)
+
+			
+			peers := queryHash(conn, chunkHashes)
+			if len(peers) == 0 {
+				fmt.Println("No peers found with the file.")
+				continue
+			}
+
+		
+			downloadedChunks, err := downloadChunksFromPeers(peers, chunkHashes, 1024)
+			if err != nil {
+				log.Fatalf("Error downloading chunks: %v", err)
+			}
+
+			
+			outputFilePath := "downloaded_" + filepath.Base(filePath)
+			if err := combineChunks(downloadedChunks, outputFilePath); err != nil {
+				log.Fatalf("Error combining chunks: %v", err)
+			}
+
+			fmt.Printf("File successfully downloaded and saved to %s\n", outputFilePath)
+
 		default:
-			fmt.Println("Invalid choice. Please enter 1 or 2.")
+			fmt.Println("Invalid choice. Please enter 1, 2 or 3.")
 		}
 	}
 }
