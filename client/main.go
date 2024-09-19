@@ -187,19 +187,16 @@ func monitorDirectory(conn net.Conn, directory string, server *Client) {
 	}
 }
 
-func querySingleHash(conn net.Conn, hash int) ([]string, error) {
+func queryHash(conn net.Conn, hash int) ([]string, error) {
 	encoder := gob.NewEncoder(conn)
-
 	if err := encoder.Encode("query"); err != nil {
 		log.Println("Error encoding request type:", err)
 		return nil, err
 	}
-
 	if err := encoder.Encode(hash); err != nil {
 		log.Println("Error encoding hash:", err)
 		return nil, err
 	}
-
 	decoder := gob.NewDecoder(conn)
 	var ips []string
 	if err := decoder.Decode(&ips); err == nil {
@@ -211,71 +208,33 @@ func querySingleHash(conn net.Conn, hash int) ([]string, error) {
 	return ips, nil
 }
 
-func (s *Client) handleStoreRequest(conn net.Conn) {
-	storageDir := "./storage"
-	err := os.MkdirAll(storageDir, os.ModePerm)
-	if err != nil {
-		log.Println("Error creating storage directory:", err)
-		return
-	}
-
-	var filename string
-	decoder := gob.NewDecoder(conn)
-	if err := decoder.Decode(&filename); err != nil {
-		log.Println("Error decoding filename:", err)
-		return
-	}
-
-	var chunkData []byte
-	if err := decoder.Decode(&chunkData); err != nil {
-		log.Println("Error decoding chunk data:", err)
-		return
-	}
-
-	filePath := filepath.Join(storageDir, filename)
-	file, err := os.OpenFile(filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		log.Println("Error opening/creating file:", err)
-		return
-	}
-	defer file.Close()
-
-	if _, err := file.Write(chunkData); err != nil {
-		log.Println("Error writing chunk to file:", err)
-		return
-	}
-
-	log.Printf("Chunk stored successfully in %s\n", filePath)
-}
-
-func (s *Client) handleDownloadRequest(conn net.Conn) {
-	// Decodificar o hash recebido
+func (s *Client) handleDownloadRequest(conn net.Conn, decoder *gob.Decoder) {
 	var fileHash int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&fileHash); err != nil {
+		fmt.Println(err)
 		log.Println("Error decoding file hash:", err)
 		return
 	}
-
-	// Construir o caminho completo do arquivo usando o hash
 	filePath := s.hashMap[fileHash]
-	file, err := os.Open(filePath)
+	file, err := os.Open("./" + filePath)
 	if err != nil {
+		fmt.Println("./" + filePath)
+		fmt.Println(err)
 		log.Println("Error opening file:", err)
 		return
 	}
 	defer file.Close()
 
-	// Ler os dados do chunk
 	chunkData, err := io.ReadAll(file)
 	if err != nil {
+		fmt.Print(err)
 		log.Println("Error reading chunk data:", err)
 		return
 	}
 
-	// Enviar os dados do chunk de volta ao cliente
 	encoder := gob.NewEncoder(conn)
 	if err := encoder.Encode(chunkData); err != nil {
+		fmt.Print(err)
 		log.Println("Error encoding chunk data:", err)
 		return
 	}
@@ -299,10 +258,8 @@ func (s *Client) handleConnection(conn net.Conn) {
 		}
 
 		switch requestType {
-		case "store":
-			s.handleStoreRequest(conn)
 		case "download":
-			s.handleDownloadRequest(conn)
+			s.handleDownloadRequest(conn, decoder)
 		default:
 			log.Println("Unknown request type:", requestType)
 		}
@@ -329,39 +286,29 @@ func startClientServer(server *Client) {
 }
 
 func donwload(hash int, ip string, outputPath string) error {
-	// Conectar ao servidor
 	conn, err := net.Dial("tcp", ip+":9090")
 	if err != nil {
+		fmt.Print("erroratrtrgfd")
 		return fmt.Errorf("error connecting to server: %v", err)
 	}
 	defer conn.Close()
-
-	// Criar um encoder para enviar a solicitação de download
 	encoder := gob.NewEncoder(conn)
-
-	// Enviar o tipo de solicitação
 	requestType := "download"
 	if err := encoder.Encode(&requestType); err != nil {
 		return fmt.Errorf("error sending request type: %v", err)
 	}
-
-	// Enviar o hash do arquivo
 	if err := encoder.Encode(&hash); err != nil {
 		return fmt.Errorf("error sending file hash: %v", err)
 	}
-
-	// Criar um decoder para receber o chunk
 	decoder := gob.NewDecoder(conn)
 	var chunkData []byte
 	if err := decoder.Decode(&chunkData); err != nil {
+		fmt.Printf("error receiving chunk data: %v", err)
 		return fmt.Errorf("error receiving chunk data: %v", err)
 	}
-
-	// Salvar o chunk em um arquivo
 	if err := os.WriteFile(outputPath, chunkData, 0644); err != nil {
 		return fmt.Errorf("error saving chunk to file: %v", err)
 	}
-
 	fmt.Printf("Chunk downloaded and saved to %s\n", outputPath)
 	return nil
 }
@@ -389,8 +336,8 @@ func main() {
 	for {
 		fmt.Println("\nChoose an option:")
 		fmt.Println("1. Query hash")
-		fmt.Println("2. Exit")
-		fmt.Println("3. Download file")
+		fmt.Println("2. Download file")
+		fmt.Println("3. Exit")
 		fmt.Print("Enter choice (1, 2 or 3): ")
 
 		choiceStr, err := reader.ReadString('\n')
@@ -413,14 +360,9 @@ func main() {
 			if err != nil {
 				log.Fatal("Invalid hash value:", err)
 			}
-			querySingleHash(conn, hash)
+			queryHash(conn, hash)
 
 		case 2:
-
-			fmt.Println("Exiting...")
-			return
-
-		case 3:
 
 			fmt.Print("Enter hash to query: ")
 			hashInput, _ := reader.ReadString('\n')
@@ -435,7 +377,7 @@ func main() {
 			filePath, _ := reader.ReadString('\n')
 			filePath = strings.TrimSpace(filePath)
 
-			ips, err := querySingleHash(conn, hash)
+			ips, err := queryHash(conn, hash)
 
 			if err != nil {
 				log.Fatal("Error while searching for IPs for the provided hash", err)
@@ -447,9 +389,12 @@ func main() {
 				continue
 			}
 
-			go donwload(hash, ips[0], filePath)
+			donwload(hash, strings.Split(ips[0], ":")[0], filePath)
 
-			fmt.Printf("File successfully downloaded and saved to %s\n", filePath)
+		case 3:
+
+			fmt.Println("Exiting...")
+			return
 
 		default:
 			fmt.Println("Invalid choice. Please enter 1, 2 or 3.")

@@ -3,10 +3,8 @@ package main
 import (
 	"encoding/gob"
 	"fmt"
-	"io"
 	"log"
 	"net"
-	"os"
 	"sync"
 )
 
@@ -21,59 +19,6 @@ func NewServer() *Server {
 		hashMap:    make(map[int][]string),
 		clientData: make(map[string][]int),
 	}
-}
-
-func (s *Server) handleDownloadRequest(conn net.Conn) {
-	var chunkHash int
-	decoder := gob.NewDecoder(conn)
-
-	log.Println("Waiting to decode chunk hash...")
-	if err := decoder.Decode(&chunkHash); err != nil {
-		log.Println("Error decoding chunk hash:", err)
-		return
-	}
-	log.Printf("Received request for chunk with hash %d\n", chunkHash)
-
-	filePath := "./dataset/rayane.txt"
-	file, err := os.Open(filePath)
-	if err != nil {
-		log.Printf("Error opening file %s: %v", filePath, err)
-		return
-	}
-	defer file.Close()
-
-	chunkSize := 1024
-	buffer := make([]byte, chunkSize)
-
-	offset := chunkHash * chunkSize
-	log.Printf("Seeking to offset %d in file %s\n", offset, filePath)
-
-	_, err = file.Seek(int64(offset), 0)
-	if err != nil {
-		log.Printf("Error seeking file %s: %v", filePath, err)
-		return
-	}
-
-	bytesRead, err := file.Read(buffer)
-	if err != nil && err != io.EOF {
-		log.Printf("Error reading file chunk: %v", err)
-		return
-	}
-
-	if bytesRead == 0 {
-		log.Printf("No more data to read from file %s\n", filePath)
-		return
-	}
-
-	chunkData := buffer[:bytesRead]
-
-	encoder := gob.NewEncoder(conn)
-	log.Println("Sending chunk data to client...")
-	if err := encoder.Encode(chunkData); err != nil {
-		log.Println("Error encoding chunk data:", err)
-		return
-	}
-	log.Printf("Chunk with hash %d sent to client\n", chunkHash)
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
@@ -95,26 +40,22 @@ func (s *Server) handleConnection(conn net.Conn) {
 			return
 		}
 
-		switch requestType {
-		case "store":
-			s.handleStoreRequest(conn)
-		case "create":
-			s.handleCreateRequest(conn)
-		case "delete":
-			s.handleDeleteRequest(conn)
-		case "query":
-			s.handleQueryRequest(conn)
-		case "download":
-			s.handleDownloadRequest(conn)
-		default:
+		if requestType == "store" {
+			s.handleStoreRequest(conn, decoder)
+		} else if requestType == "create" {
+			s.handleCreateRequest(conn, decoder)
+		} else if requestType == "delete" {
+			s.handleDeleteRequest(conn, decoder)
+		} else if requestType == "query" {
+			s.handleQueryRequest(conn, decoder)
+		} else {
 			log.Println("Unknown request type:", requestType)
 		}
 	}
 }
 
-func (s *Server) handleStoreRequest(conn net.Conn) {
+func (s *Server) handleStoreRequest(conn net.Conn, decoder *gob.Decoder) {
 	var clientHashes []int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&clientHashes); err != nil {
 		log.Println("Error decoding data:", err)
 		return
@@ -134,9 +75,8 @@ func (s *Server) handleStoreRequest(conn net.Conn) {
 	printHashMap(s.hashMap)
 }
 
-func (s *Server) handleCreateRequest(conn net.Conn) {
+func (s *Server) handleCreateRequest(conn net.Conn, decoder *gob.Decoder) {
 	var fileHash int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&fileHash); err != nil {
 		log.Println("Error decoding file hash:", err)
 		return
@@ -155,9 +95,8 @@ func (s *Server) handleCreateRequest(conn net.Conn) {
 	fmt.Printf("File created by %s: Hash %d\n", clientIP, fileHash)
 }
 
-func (s *Server) handleDeleteRequest(conn net.Conn) {
+func (s *Server) handleDeleteRequest(conn net.Conn, decoder *gob.Decoder) {
 	var fileHash int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&fileHash); err != nil {
 		log.Println("Error decoding file hash:", err)
 		return
@@ -184,9 +123,8 @@ func (s *Server) handleDeleteRequest(conn net.Conn) {
 	fmt.Printf("File deleted by %s: Hash %d\n", clientIP, fileHash)
 }
 
-func (s *Server) handleQueryRequest(conn net.Conn) {
+func (s *Server) handleQueryRequest(conn net.Conn, decoder *gob.Decoder) {
 	var hash int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&hash); err != nil {
 		log.Println("Error decoding hash:", err)
 		return
