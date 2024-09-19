@@ -1,6 +1,6 @@
 module github.com/GeraldoSJr/BitTorrent-pirata/v2
 
-go 1.23.0
+go 1.23
 
 require (
 	github.com/fsnotify/fsnotify v1.7.0 // indirect

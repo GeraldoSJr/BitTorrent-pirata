@@ -4,15 +4,28 @@ import (
 	"bufio"
 	"encoding/gob"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/fsnotify/fsnotify"
 )
+
+type Client struct {
+	sync.Mutex
+	hashMap map[int]string
+}
+
+func NewClient() *Client {
+	return &Client{
+		hashMap: make(map[int]string),
+	}
+}
 
 func readFile(filePath string) ([]byte, error) {
 	data, err := os.ReadFile(filePath)
@@ -113,7 +126,7 @@ func storeHashes(conn net.Conn, hashes map[string][]int) {
 	fmt.Println("Initial hashes stored.")
 }
 
-func updateServer(conn net.Conn, action string, filePath string) {
+func updateServer(conn net.Conn, action string, filePath string, client *Client) {
 	encoder := gob.NewEncoder(conn)
 
 	if err := encoder.Encode(action); err != nil {
@@ -132,10 +145,14 @@ func updateServer(conn net.Conn, action string, filePath string) {
 		return
 	}
 
+	client.Lock()
+	client.hashMap[fileHash] = filePath
+	client.Unlock()
+
 	fmt.Printf("Server updated: %s - %s\n", action, filePath)
 }
 
-func monitorDirectory(conn net.Conn, directory string) {
+func monitorDirectory(conn net.Conn, directory string, server *Client) {
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		log.Fatal(err)
@@ -155,11 +172,11 @@ func monitorDirectory(conn net.Conn, directory string) {
 			}
 			if event.Op&fsnotify.Create == fsnotify.Create {
 				fmt.Println("File created:", event.Name)
-				updateServer(conn, "create", event.Name)
+				updateServer(conn, "create", event.Name, server)
 			}
 			if event.Op&fsnotify.Remove == fsnotify.Remove {
 				fmt.Println("File deleted:", event.Name)
-				updateServer(conn, "delete", event.Name)
+				updateServer(conn, "delete", event.Name, server)
 			}
 		case err, ok := <-watcher.Errors:
 			if !ok {
@@ -170,19 +187,16 @@ func monitorDirectory(conn net.Conn, directory string) {
 	}
 }
 
-func queryHash(conn net.Conn, hash int) {
+func queryHash(conn net.Conn, hash int) ([]string, error) {
 	encoder := gob.NewEncoder(conn)
-
 	if err := encoder.Encode("query"); err != nil {
 		log.Println("Error encoding request type:", err)
-		return
+		return nil, err
 	}
-
 	if err := encoder.Encode(hash); err != nil {
 		log.Println("Error encoding hash:", err)
-		return
+		return nil, err
 	}
-
 	decoder := gob.NewDecoder(conn)
 	var ips []string
 	if err := decoder.Decode(&ips); err == nil {
@@ -190,10 +204,122 @@ func queryHash(conn net.Conn, hash int) {
 	} else {
 		log.Println("Error decoding result:", err)
 	}
+
+	return ips, nil
+}
+
+func (s *Client) handleDownloadRequest(conn net.Conn, decoder *gob.Decoder) {
+	var fileHash int
+	if err := decoder.Decode(&fileHash); err != nil {
+		fmt.Println(err)
+		log.Println("Error decoding file hash:", err)
+		return
+	}
+	filePath := s.hashMap[fileHash]
+	file, err := os.Open("./" + filePath)
+	if err != nil {
+		fmt.Println("./" + filePath)
+		fmt.Println(err)
+		log.Println("Error opening file:", err)
+		return
+	}
+	defer file.Close()
+
+	chunkData, err := io.ReadAll(file)
+	if err != nil {
+		fmt.Print(err)
+		log.Println("Error reading chunk data:", err)
+		return
+	}
+
+	encoder := gob.NewEncoder(conn)
+	if err := encoder.Encode(chunkData); err != nil {
+		fmt.Print(err)
+		log.Println("Error encoding chunk data:", err)
+		return
+	}
+
+	log.Printf("Chunk with hash %d sent successfully\n", fileHash)
+}
+
+func (s *Client) handleConnection(conn net.Conn) {
+	defer conn.Close()
+
+	for {
+		var requestType string
+		decoder := gob.NewDecoder(conn)
+		if err := decoder.Decode(&requestType); err != nil {
+			if err.Error() == "EOF" {
+				log.Println("Client disconnected")
+				return
+			}
+			log.Println("Error decoding request type:", err)
+			return
+		}
+
+		switch requestType {
+		case "download":
+			s.handleDownloadRequest(conn, decoder)
+		default:
+			log.Println("Unknown request type:", requestType)
+		}
+	}
+}
+
+func startClientServer(server *Client) {
+	ln, err := net.Listen("tcp", ":9090")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer ln.Close()
+
+	fmt.Println("Server is listening on port 8080...")
+
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
+			log.Println("Error accepting connection:", err)
+			continue
+		}
+		go server.handleConnection(conn)
+	}
+}
+
+func donwload(hash int, ip string, outputPath string) error {
+	conn, err := net.Dial("tcp", ip+":9090")
+	if err != nil {
+		fmt.Print("erroratrtrgfd")
+		return fmt.Errorf("error connecting to server: %v", err)
+	}
+	defer conn.Close()
+	encoder := gob.NewEncoder(conn)
+	requestType := "download"
+	if err := encoder.Encode(&requestType); err != nil {
+		return fmt.Errorf("error sending request type: %v", err)
+	}
+	if err := encoder.Encode(&hash); err != nil {
+		return fmt.Errorf("error sending file hash: %v", err)
+	}
+	decoder := gob.NewDecoder(conn)
+	var chunkData []byte
+	if err := decoder.Decode(&chunkData); err != nil {
+		fmt.Printf("error receiving chunk data: %v", err)
+		return fmt.Errorf("error receiving chunk data: %v", err)
+	}
+	if err := os.WriteFile(outputPath, chunkData, 0644); err != nil {
+		return fmt.Errorf("error saving chunk to file: %v", err)
+	}
+	fmt.Printf("Chunk downloaded and saved to %s\n", outputPath)
+	return nil
 }
 
 func main() {
-	conn, err := net.Dial("tcp", "localhost:8080")
+	reader := bufio.NewReader(os.Stdin)
+	fmt.Print("Enter server IP: ")
+	serverIp, _ := reader.ReadString('\n')
+	serverIp = strings.TrimSpace(serverIp)
+
+	conn, err := net.Dial("tcp", serverIp+":8080")
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -203,14 +329,16 @@ func main() {
 	initialHashes := generateFilesHashMap(directory)
 	storeHashes(conn, initialHashes)
 
-	go monitorDirectory(conn, directory)
+	server := NewClient()
+	go monitorDirectory(conn, directory, server)
+	go startClientServer(server)
 
-	reader := bufio.NewReader(os.Stdin)
 	for {
 		fmt.Println("\nChoose an option:")
 		fmt.Println("1. Query hash")
-		fmt.Println("2. Exit")
-		fmt.Print("Enter choice (1 or 2): ")
+		fmt.Println("2. Download file")
+		fmt.Println("3. Exit")
+		fmt.Print("Enter choice (1, 2 or 3): ")
 
 		choiceStr, err := reader.ReadString('\n')
 		if err != nil {
@@ -224,6 +352,7 @@ func main() {
 
 		switch choice {
 		case 1:
+
 			fmt.Print("Enter hash to query: ")
 			hashInput, _ := reader.ReadString('\n')
 			hashInput = strings.TrimSpace(hashInput)
@@ -234,11 +363,41 @@ func main() {
 			queryHash(conn, hash)
 
 		case 2:
+
+			fmt.Print("Enter hash to query: ")
+			hashInput, _ := reader.ReadString('\n')
+			hashInput = strings.TrimSpace(hashInput)
+			hash, err := strconv.Atoi(hashInput)
+
+			if err != nil {
+				log.Fatal("Invalid hash value:", err)
+			}
+
+			fmt.Print("Enter file path to output: ")
+			filePath, _ := reader.ReadString('\n')
+			filePath = strings.TrimSpace(filePath)
+
+			ips, err := queryHash(conn, hash)
+
+			if err != nil {
+				log.Fatal("Error while searching for IPs for the provided hash", err)
+				continue
+			}
+
+			if len(ips) == 0 {
+				fmt.Println("No IPs found for the provided hash.")
+				continue
+			}
+
+			donwload(hash, strings.Split(ips[0], ":")[0], filePath)
+
+		case 3:
+
 			fmt.Println("Exiting...")
 			return
 
 		default:
-			fmt.Println("Invalid choice. Please enter 1 or 2.")
+			fmt.Println("Invalid choice. Please enter 1, 2 or 3.")
 		}
 	}
 }

@@ -41,22 +41,21 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 
 		if requestType == "store" {
-			s.handleStoreRequest(conn)
+			s.handleStoreRequest(conn, decoder)
 		} else if requestType == "create" {
-			s.handleCreateRequest(conn)
+			s.handleCreateRequest(conn, decoder)
 		} else if requestType == "delete" {
-			s.handleDeleteRequest(conn)
+			s.handleDeleteRequest(conn, decoder)
 		} else if requestType == "query" {
-			s.handleQueryRequest(conn)
+			s.handleQueryRequest(conn, decoder)
 		} else {
 			log.Println("Unknown request type:", requestType)
 		}
 	}
 }
 
-func (s *Server) handleStoreRequest(conn net.Conn) {
+func (s *Server) handleStoreRequest(conn net.Conn, decoder *gob.Decoder) {
 	var clientHashes []int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&clientHashes); err != nil {
 		log.Println("Error decoding data:", err)
 		return
@@ -76,9 +75,8 @@ func (s *Server) handleStoreRequest(conn net.Conn) {
 	printHashMap(s.hashMap)
 }
 
-func (s *Server) handleCreateRequest(conn net.Conn) {
+func (s *Server) handleCreateRequest(conn net.Conn, decoder *gob.Decoder) {
 	var fileHash int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&fileHash); err != nil {
 		log.Println("Error decoding file hash:", err)
 		return
@@ -97,9 +95,8 @@ func (s *Server) handleCreateRequest(conn net.Conn) {
 	fmt.Printf("File created by %s: Hash %d\n", clientIP, fileHash)
 }
 
-func (s *Server) handleDeleteRequest(conn net.Conn) {
+func (s *Server) handleDeleteRequest(conn net.Conn, decoder *gob.Decoder) {
 	var fileHash int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&fileHash); err != nil {
 		log.Println("Error decoding file hash:", err)
 		return
@@ -126,9 +123,8 @@ func (s *Server) handleDeleteRequest(conn net.Conn) {
 	fmt.Printf("File deleted by %s: Hash %d\n", clientIP, fileHash)
 }
 
-func (s *Server) handleQueryRequest(conn net.Conn) {
+func (s *Server) handleQueryRequest(conn net.Conn, decoder *gob.Decoder) {
 	var hash int
-	decoder := gob.NewDecoder(conn)
 	if err := decoder.Decode(&hash); err != nil {
 		log.Println("Error decoding hash:", err)
 		return
